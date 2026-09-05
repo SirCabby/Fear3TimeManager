@@ -1,0 +1,9 @@
+# Copy this file to config.mk and set your local path.
+#   cp config.mk.example config.mk
+# config.mk is gitignored, so your personal values never enter the repo.
+
+# Absolute path to your F.E.A.R. 3 folder (the directory containing "F.E.A.R. 3.exe").
+# The path contains spaces; that is fine - do not quote it here.
+# Windows example:      GAME_DIR := C:/Program Files (x86)/Steam/steamapps/common/F.E.A.R. 3
+# Linux/Proton example: GAME_DIR := /home/you/.local/share/Steam/steamapps/common/F.E.A.R. 3
+GAME_DIR := /path/to/your/F.E.A.R. 3
