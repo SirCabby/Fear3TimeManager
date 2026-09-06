@@ -648,13 +648,17 @@ void set_mission_time(float seconds) {
   if (g_off_cumul) mem::write<float>(m + g_off_cumul, v);
 }
 
-void hold_time(float mission, float cumulative) {
+float hold_time(float mission, float cumulative) {
   const uintptr_t m = score_mgr_obj();
-  if (!m) return;
-  float cur = 0.0f;
-  if (mem::read_safe(m + g_off_timer, &cur) && cur != mission) mem::write<float>(m + g_off_timer, mission);
+  if (!m) return -1.0f;
+  float was = -1.0f, cur = 0.0f;
+  if (mem::read_safe(m + g_off_timer, &cur)) {
+    was = cur;
+    if (cur != mission) mem::write<float>(m + g_off_timer, mission);
+  }
   if (g_off_cumul && cumulative >= 0.0f && mem::read_safe(m + g_off_cumul, &cur) && cur != cumulative)
     mem::write<float>(m + g_off_cumul, cumulative);
+  return was;
 }
 
 uintptr_t difficulty_obj() {

@@ -11,8 +11,12 @@ against the mission's target time, in the top-right corner, only while a mission
 - **Target time** is the mission's par time for the difficulty you are playing. F.E.A.R. 3 stores
   four par times per mission (one per difficulty); the mod detects the mission and the difficulty and
   shows the right one. The played time turns red once it passes the target.
-- **F10** pauses and resumes the mission timer. While paused the mod holds the value even when the
-  game would restart the timer (checkpoint loads, cutscenes). The HUD shows *(paused)*.
+- **F10** pauses and resumes the mission timer. A pause is sticky: the mod holds the value until
+  *you* resume it, through cutscenes, checkpoint reloads, the mission summary, the next level and a
+  new game. The game restarts its own timer at every one of those; the hold puts it straight back.
+  The HUD shows *(paused)*.
+- Because a pause survives a level change, the held time can belong to an earlier mission. The
+  control strip says so when it does; **Set played** re-bases it on the mission you are in.
 - **F9** hides or shows the HUD. Its position, size and text scale come from the ini.
 - **Pause the game (Esc)** and the HUD grows a control strip: pause/resume, hide/show, a box to set
   the played time (`mm:ss`, `h:mm:ss` or seconds), and the name of the detected mission with the
@@ -59,7 +63,8 @@ generated jump thunks), so it loads before the game starts and needs no injector
 engine's score manager and menu manager at runtime — by their RTTI vtables, never by fixed
 addresses; the Steam-protected executable is never modified — and reads the mission timer and its
 running flag straight from the score manager. Pausing holds the timer's value in place, since the
-game's own restart refuses to run in single player. The current mission comes from the player
+game's own restart refuses to run in single player; the hold is re-asserted every tick, in a level
+or not, so the resets the game does at a level start or a checkpoint load never end a pause. The current mission comes from the player
 profile's level id, resolved through the level-list global data the game itself uses for mission
 progression, and the current difficulty from the engine's difficulty component. The four par times
 per mission were read out of the game's own world data, so the target is correct on every difficulty
@@ -74,7 +79,7 @@ Linux with mingw-w64 (`i686-w64-mingw32-g++`); no Windows or MSVC needed.
 cp config.mk.example config.mk   # set GAME_DIR
 make                             # build/fmodex.dll
 make install                     # deploy into GAME_DIR (renames the stock DLL once)
-make rev 1.1.0                   # set the version (VERSION file, baked into the DLL)
+make version 1.2.0               # set the version (VERSION file, baked into the DLL)
 make package                     # dist/Fear3TimeManager_v<version>.zip
 python3 tools/gen_proxy.py --exe "$GAME_DIR/F.E.A.R. 3.exe" --dll fmodex.dll \
     --def fmodex.def --inc src/proxy_exports.inc --prefix fmod   # regenerate the export list

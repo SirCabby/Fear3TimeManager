@@ -9,7 +9,7 @@ This mod is open source! Check it out at [url=https://github.com/SirCabby/Fear3T
 [size=5][b]What it does[/b][/size]
 [list]
 [*]Shows the game's own [b]mission timer[/b] (the one the mission summary scores you on) next to the mission's [b]target time[/b]. The mission and difficulty are detected automatically, and the four par times per mission (one per difficulty) were read from the game's world data, so the target is right on every difficulty. All values are editable in the ini.
-[*][b]F10[/b] pauses and resumes the mission timer. While paused the mod holds the value even when the game would restart the timer.
+[*][b]F10[/b] pauses and resumes the mission timer. A pause is sticky: the mod holds the value until you resume it, through cutscenes, checkpoint reloads, the next level and a new game - the game restarts its own timer at every one of those and the hold puts it straight back. Since the time can then belong to an earlier mission, the control strip says so, and [b]Set played[/b] re-bases it.
 [*][b]F9[/b] hides or shows the HUD.
 [*][b]Pause the game (Esc)[/b] for a small control strip: pause/resume, hide/show, and a box to type a new played time (mm:ss, h:mm:ss or seconds).
 [/list]

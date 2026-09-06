@@ -16,6 +16,7 @@ struct Snapshot {
   bool paused_menu = false;     // the game's pause menu is up
   bool timer_running = false;   // the game's own flag
   bool frozen = false;          // the mod is holding the timer
+  int frozen_mission_index = -1;  // the mission the hold was taken in (see mission_index)
   int mission_seconds = -1;     // played time; -1 = unknown
   int par_seconds = -1;         // target time; -1 = unknown
   unsigned long main_thread = 0;

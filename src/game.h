@@ -23,7 +23,10 @@ int par_time();               // the game's par field (set at mission end), <=0 
 bool timer_running();
 bool timer_locked();
 void set_mission_time(float seconds);           // sets the mission timer and the cumulative timer
-void hold_time(float mission, float cumulative);  // re-assert both values (the freeze)
+// Re-assert both values (the freeze). Returns the mission time the game had
+// before the write (-1 if unreadable), so the caller can tell one frame of dt
+// from the game resetting its own timer at a level start or checkpoint load.
+float hold_time(float mission, float cumulative);
 
 // The current mission: the level id the player profile carries, resolved
 // through the level-list global data to the mission's progression index and

@@ -211,6 +211,12 @@ void draw_panel() {
       ImGui::TextDisabled("Mission %d (%s)  no target set", s.mission_index + 1, diff);
     else
       ImGui::TextDisabled("Mission: detecting...");
+    // A pause survives level changes, so the held time can belong to an earlier
+    // mission; say so rather than let a stale number sit against a new target.
+    if (s.frozen && s.frozen_mission_index >= 0 && s.mission_index >= 0 &&
+        s.frozen_mission_index != s.mission_index)
+      ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Paused since mission %d - \"Set played\" re-bases it",
+                         s.frozen_mission_index + 1);
     ImGui::TextDisabled("F%d hide/show  |  F%d pause/resume", cfg.toggle_key - 0x6F, cfg.pause_key - 0x6F);
     if (!s.timer_running && !s.frozen) ImGui::TextDisabled("(the game has its timer stopped right now)");
   }

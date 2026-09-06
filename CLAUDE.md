@@ -14,7 +14,7 @@ capture, gotchas); only what is specific to the timer is repeated here.
 make            # -> build/fmodex.dll   (config.mk sets GAME_DIR; gitignored)
 make install    # rename stock fmodex.dll -> fmodex_orig.dll (once), deploy ours atomically
 make uninstall  # restore the stock DLL
-make rev X.Y.Z  # set the version;  make package -> dist/Fear3TimeManager_vX.Y.Z.zip
+make version X.Y.Z   # set the version;  make package -> dist/Fear3TimeManager_vX.Y.Z.zip
 python3 tools/gen_proxy.py --exe "$GAME_DIR/F.E.A.R. 3.exe" --dll fmodex.dll --def fmodex.def \
     --inc src/proxy_exports.inc --prefix fmod        # regenerate the proxy export list
 python3 tools/find_regs.py --exe "$GAME_DIR/F.E.A.R. 3.exe" --name GetMissionTime   # etc.
@@ -70,6 +70,18 @@ second, cumulative timer at `+0x8C` advances next to it.
 "resumed at 83 s" and the value stayed 83 for good). The freeze is therefore a *hold*: every tick
 the mod writes the frozen values back into `+0x88` and `+0x8C` while the game keeps adding dt
 (drift under one tick, invisible at whole seconds). Setting the time writes both floats.
+
+**The hold is sticky and unconditional.** Only the user ends it (the pause key, the pause-menu
+button; a new played time re-bases it). It is *not* gated on being in a level: the game resets and
+restarts its own timer at a level start, a checkpoint load and a new game, so the hold has to be in
+place through the loads and menus in between - an earlier build released it when
+`HasPlayerStartedLevel` went false, which is exactly what un-paused the timer on every reload.
+`hold_time` writes only when the field has drifted (so it is a read per tick while nothing moves the
+timer) and returns what it found, which is how `dispatch.cpp` logs the game's own resets. The
+value carries with the pause, so a pause taken in one mission holds that mission's time in the next
+one; the control strip says so (`frozen_mission_index` vs `mission_index`) rather than re-basing
+silently. A freeze never latches a failed read (`mission_time_f() < 0`), since that value would
+be stamped back forever.
 
 **Par time is set only at the mission-summary screen.** The level script `EndCurrentLevel.lua`
 calls `GameScript.Support:ImportFloatVariable("Easy Par Time")` (a single value per mission, no

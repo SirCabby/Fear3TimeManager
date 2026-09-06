@@ -25,9 +25,16 @@ bool g_in_level_prev = false;
 // Requests, written by the render thread, consumed here.
 volatile LONG g_req_freeze = -1;      // -1 none, 0 resume, 1 freeze
 volatile LONG g_req_set = -1;         // -1 none, else seconds
+// The pause is sticky: only the user ends it (the pause key, the pause-menu
+// button, or a new played time). Nothing the game does - ending a level,
+// starting the next one, loading a checkpoint, starting a new game - clears it
+// or moves the held value, because all of those are exactly the moments the
+// game resets its own timer and the pause has to outlive them.
 bool g_frozen = false;
 float g_frozen_mission = 0.0f;     // the values held while frozen
 float g_frozen_cumulative = -1.0f;
+int g_frozen_index = -1;           // the mission the hold was taken in (campaign index)
+DWORD g_last_reset_log = 0;
 
 // Mission detection state, re-evaluated on the main thread.
 DWORD g_last_mission_check = 0;
@@ -121,10 +128,9 @@ void tick() {
   if (s.in_level != g_in_level_prev) {
     logf("level %s (player %d)", s.in_level ? "started" : "ended", player);
     g_in_level_prev = s.in_level;
-    if (!s.in_level && g_frozen) {
-      logf("level ended - releasing the timer hold");
-      g_frozen = false;
-    }
+    if (g_frozen)
+      logf("the mission timer stays paused at %.2f s across the level %s", g_frozen_mission,
+           s.in_level ? "start" : "end");
     if (s.in_level) {
       refresh_mission(true);
       if (config::get().trace) game::dump_diagnostics("level start");
@@ -144,14 +150,23 @@ void tick() {
       game::set_mission_time(static_cast<float>(set));
       g_frozen_mission = static_cast<float>(set);
       g_frozen_cumulative = game::cumulative_time_f();
+      g_frozen_index = g_auto_index;  // a new time re-bases the hold on the mission being played
       logf("mission time set to %d s", set);
     }
     const LONG fr = InterlockedExchange(&g_req_freeze, -1);
     if (fr == 1 && !g_frozen) {
-      g_frozen = true;
-      g_frozen_mission = game::mission_time_f();
-      g_frozen_cumulative = game::cumulative_time_f();
-      logf("mission timer frozen at %.2f s", g_frozen_mission);
+      // The hold now outlives every level load, so it must never latch a value
+      // that came from a failed read: that would be stamped back forever.
+      const float t = game::mission_time_f();
+      if (t < 0.0f) {
+        logf("pause ignored: the mission timer could not be read");
+      } else {
+        g_frozen = true;
+        g_frozen_mission = t;
+        g_frozen_cumulative = game::cumulative_time_f();
+        g_frozen_index = g_auto_index;
+        logf("mission timer frozen at %.2f s", g_frozen_mission);
+      }
     } else if (fr == 0 && g_frozen) {
       g_frozen = false;
       logf("mission timer resumed at %.2f s", game::mission_time_f());
@@ -159,7 +174,21 @@ void tick() {
     // The freeze: the game's timer keeps adding dt every frame (its own
     // StartMissionTimer refuses to restart in single player, so stopping it is
     // a one-way trip); instead the held values are re-asserted every tick.
-    if (g_frozen && s.in_level) game::hold_time(g_frozen_mission, g_frozen_cumulative);
+    // Not gated on being in a level: the game resets and restarts its timer at
+    // every level start, checkpoint reload and new game, so the hold has to be
+    // in place through the loads and menus in between, not just during play.
+    // (hold_time only writes when the field has drifted, so this costs a read
+    // per tick while nothing is moving the timer.)
+    if (g_frozen) {
+      const float was = game::hold_time(g_frozen_mission, g_frozen_cumulative);
+      // A frame of dt is normal drift; a jump means the game restarted its own
+      // timer (new level, new game, checkpoint) and the hold has just undone it.
+      if (was >= 0.0f && (was < g_frozen_mission - 1.0f || was > g_frozen_mission + 1.0f) &&
+          now - g_last_reset_log > 1000) {
+        g_last_reset_log = now;
+        logf("the game moved its mission timer to %.2f s - held at %.2f s", was, g_frozen_mission);
+      }
+    }
     s.timer_running = game::timer_running();
     s.mission_seconds = game::mission_time();
     refresh_mission(false);
@@ -192,6 +221,7 @@ void tick() {
     }
   }
   s.frozen = g_frozen;
+  s.frozen_mission_index = g_frozen_index;
   g_snap = s;
 }
 
