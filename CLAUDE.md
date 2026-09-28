@@ -24,6 +24,10 @@ The log (`Fear3TimeManager.log`) and ini (`Fear3TimeManager.ini`) sit beside the
 folder. `Trace = 1` adds scan diagnostics; `AlwaysShow = 1` draws the HUD outside missions (rendering
 test); `Disable = overlay,dispatch,game` bisects a fault.
 
+`tests/test_adopt.cpp` runs the renderer hooks under Wine with the Steam overlay's way of hooking
+played by the test (build and run commands in its header; `F3TM_ADOPT=1` makes the proxy take the
+Windows path under Wine). See "The HUD's hooks on Windows".
+
 ## ⛔ Rules
 
 - **Never patch `F.E.A.R. 3.exe` on disk** (CEG). Proxy DLL plus in-memory hooks only.
@@ -33,6 +37,8 @@ test); `Disable = overlay,dispatch,game` bisects a fault.
 - **Game calls only on the main thread** (`dispatch.cpp`'s `PeekMessageA` hook, primary thread only).
 - **Never call a game function on a guessed layout.** Confirm from reflection registrations or the
   function bytes first (the challenge mod lost a restart cycle to exactly that).
+- **On Windows, no function of the mod's in a vtable another hooker reads** (The HUD's hooks on
+  Windows).
 - The user commits every repo himself — do not `git commit`/`push` unless asked.
 
 ## Why fmodex.dll
@@ -140,6 +146,27 @@ the game context.
 
 `MenuMgr::IsPauseMenuShowing` (slot 69 on the `+4` subobject: `[sub+0x60] != 0 && [sub+0x64] == 1`)
 and `HasPlayerStartedLevel` (no `this`; `0x616950`) gate the HUD and the controls, as in the sibling.
+
+## The HUD's hooks on Windows (src/adopt.cpp, overlay_dx11.cpp, overlay_dx9.cpp)
+The renderer capture is Fear3ChallengeGrant's (the exe's `GetProcAddress` import hands back
+wrappers; the DXGI factory's `CreateSwapChain`, then the swap chain's `Present` 8 / `ResizeBuffers`
+13; D3D9: `IDirect3D9::CreateDevice` 16, then `EndScene` 42 / `Reset` 16). The account of the Windows crash is in Fear3CabbyCodes' `CLAUDE.md` ("The panel's hooks on Windows"):
+the Steam overlay (`gameoverlayrenderer.dll`) hooks each new swap chain by writing a jump into
+whatever function each slot of its vtable points to at that moment and keeps one saved original per
+hook; the game makes its swap chain twice at start, and with the mod's Present/ResizeBuffers in
+DXGI's class vtable the second pass took the mod's functions for its originals - the two called
+each other until the stack ran out (`0xC00000FD`) before the first frame. Hence, on Windows only
+(`adopt::enabled()`: not Wine, or `F3TM_ADOPT` in the environment), each swap chain the factory makes for
+**the game's window** (a window of this process made by the thread that loaded the mod) and each
+D3D9 device gets a private copy of its vtable with the mod's hooks (`src/adopt.cpp`; 64 / 192
+slots), and the hooks call on through the vtable the object had, as it is at the time; the classes'
+vtables are left alone. The factory's `CreateSwapChain` and `IDirect3D9::CreateDevice` stay hooked
+in place (the overlay skips a factory slot outside `dxgi.dll` and wraps IDirect3D9 in its own
+object). Under Wine the class vtables are hooked as before. On a process exit DllMain does nothing:
+1.1.0's teardown there never finished (the log's last line was always `unloading - removing hooks`,
+under Proton too; under Wine the test process hung there until killed).
+`tests/test_adopt.cpp` plays the overlay: 1.1.0 loops (`LOOP`, D3D11 and D3D9) and hangs on exit;
+the fix passes, and the Wine path still takes the class hook. Not yet seen in game on Windows.
 
 ## Input notes
 - F10 arrives as `WM_SYSKEYDOWN` (Windows' menu key), not `WM_KEYDOWN`; the WndProc handles both for

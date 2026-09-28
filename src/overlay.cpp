@@ -7,6 +7,7 @@
 #include "dispatch.h"
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
+#include "adopt.h"
 #include "log.h"
 #include "mem.h"
 #include "version.h"
@@ -232,6 +233,7 @@ void shutdown_imgui() {
 }
 
 bool install() {
+  adopt::init();  // on the game's primary thread: the one that makes its window
   void* prev = mem::iat_hook(GetModuleHandleA(nullptr), "KERNEL32.dll", "GetProcAddress",
                              reinterpret_cast<void*>(&hk_get_proc_address));
   if (!prev) {

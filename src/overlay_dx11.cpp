@@ -1,9 +1,11 @@
 // D3D11 backend: the game resolves CreateDXGIFactory1 / D3D11CreateDevice at
 // runtime through GetProcAddress, so overlay.cpp hands us the real entry points
 // and we return wrappers. From the factory we hook IDXGIFactory::CreateSwapChain
-// (vtable slot 10); from the swap chain, IDXGISwapChain::Present (8) and
-// ResizeBuffers (13). Under DXVK, as on Windows, these vtables are shared by
-// every instance of the class, so hooking one hooks the game's.
+// (vtable slot 10, in the class's vtable); from the swap chain,
+// IDXGISwapChain::Present (8) and ResizeBuffers (13). On Windows the game's swap
+// chains get vtables of their own with those two in (adopt.cpp: the Steam
+// overlay hooks what the class's vtable points to); under Wine the class's
+// vtable - DXVK's, shared by every instance - is hooked, as it always was.
 
 #include <windows.h>
 #include <d3d11.h>
@@ -14,6 +16,8 @@
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
+#include "adopt.h"
+#include "crash.h"
 #include "log.h"
 #include "mem.h"
 
@@ -42,24 +46,64 @@ CreateSwapChainFn g_orig_create_swapchain = nullptr;
 PresentFn g_orig_present = nullptr;
 ResizeBuffersFn g_orig_resize = nullptr;
 uintptr_t g_factory_vt = 0;
-uintptr_t g_swapchain_vt = 0;
+uintptr_t g_swapchain_vt = 0;  // the class hook's (Wine)
+
+constexpr int kPresent = 8, kResizeBuffers = 13;
+// IDXGISwapChain's slots; the object may have more (IDXGISwapChain4's 41, and
+// a wrapper's own virtual functions after them), so an adopted one's copy has
+// as many as can be read, up to kSwapChainCopy.
+constexpr int kSwapChainSlots = 18, kSwapChainCopy = 64;
 
 IDXGISwapChain* g_swapchain = nullptr;
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
+IDXGISwapChain* g_rtv_owner = nullptr;  // whose back buffer g_rtv views
 HWND g_hwnd = nullptr;
 bool g_renderer_ready = false;
 
 HRESULT __stdcall hk_present(IDXGISwapChain* sc, UINT sync, UINT flags);
 HRESULT __stdcall hk_resize(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags);
 
-void capture_swapchain(IDXGISwapChain* sc, HWND hwnd) {
+void release_rtv() {
+  if (g_rtv) g_rtv->Release();
+  g_rtv = nullptr;
+  g_rtv_owner = nullptr;
+}
+
+void capture_swapchain(IDXGISwapChain* sc, HWND hwnd, const char* how) {
   if (!sc) return;
   auto vt = mem::read<uintptr_t>(reinterpret_cast<uintptr_t>(sc));
-  if (!g_orig_present) {
-    g_orig_present = reinterpret_cast<PresentFn>(mem::hook_vtable(vt, 8, reinterpret_cast<void*>(&hk_present)));
-    g_orig_resize = reinterpret_cast<ResizeBuffersFn>(mem::hook_vtable(vt, 13, reinterpret_cast<void*>(&hk_resize)));
+  if (adopt::enabled()) {
+    if (!adopt::game_window(hwnd)) {
+      adopt::leave_alone("dx11: a swap chain", how, hwnd);
+      return;
+    }
+    static const adopt::Hook hooks[] = {{kPresent, reinterpret_cast<void*>(&hk_present)},
+                                        {kResizeBuffers, reinterpret_cast<void*>(&hk_resize)}};
+    // What the hooks fall back on: the class's functions (never the mod's -
+    // on this path the class's vtable is left alone).
+    if (!g_orig_present) {
+      g_orig_present = mem::read<PresentFn>(vt + kPresent * sizeof(void*));
+      g_orig_resize = mem::read<ResizeBuffersFn>(vt + kResizeBuffers * sizeof(void*));
+    }
+    const int copied = adopt::take(sc, kSwapChainSlots, kSwapChainCopy, hooks, 2);
+    char where[MAX_PATH + 32], present[MAX_PATH + 32];
+    describe_address(reinterpret_cast<void*>(vt), where, sizeof(where));
+    describe_address(mem::read<void*>(vt + kPresent * sizeof(void*)), present, sizeof(present));
+    if (!copied) {
+      logf("ERROR: dx11: the game's swap chain %p (%s, hwnd=%p) could not be adopted (its vtable at %s) - no panel",
+           sc, how, hwnd, where);
+      return;
+    }
+    char win[128];
+    adopt::describe_window(hwnd, win, sizeof(win));
+    logf("dx11: swap chain %p (%s, %s) adopted - a vtable of its own with Present/ResizeBuffers (%d slots copied; the "
+         "class's at %s, Present %s)",
+         sc, how, win, copied, where, present);
+  } else if (!g_orig_present) {
+    g_orig_present = reinterpret_cast<PresentFn>(mem::hook_vtable(vt, kPresent, reinterpret_cast<void*>(&hk_present)));
+    g_orig_resize = reinterpret_cast<ResizeBuffersFn>(mem::hook_vtable(vt, kResizeBuffers, reinterpret_cast<void*>(&hk_resize)));
     g_swapchain_vt = vt;
     logf("dx11: swap chain %p captured (hwnd=%p); hooked Present/ResizeBuffers", sc, hwnd);
   }
@@ -90,7 +134,8 @@ bool ensure_renderer(IDXGISwapChain* sc) {
 }
 
 bool ensure_rtv(IDXGISwapChain* sc) {
-  if (g_rtv) return true;
+  if (g_rtv && g_rtv_owner == sc) return true;
+  release_rtv();  // another swap chain's back buffer: the game made a new one
   ID3D11Texture2D* back = nullptr;
   if (FAILED(sc->GetBuffer(0, kIID_ID3D11Texture2D, reinterpret_cast<void**>(&back))) || !back) return false;
   HRESULT hr = g_device->CreateRenderTargetView(back, nullptr, &g_rtv);
@@ -100,11 +145,16 @@ bool ensure_rtv(IDXGISwapChain* sc) {
     g_rtv = nullptr;
     return false;
   }
+  g_rtv_owner = sc;
   return true;
 }
 
+// A Present that comes back in while one is on its way on (adopt::calling_on)
+// is the same frame: the panel is drawn the first time through. A test present
+// shows nothing, so nothing is drawn for it either.
 HRESULT __stdcall hk_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
-  if (claim(Backend::kDx11) && ensure_renderer(sc) && wants_draw() && ensure_rtv(sc)) {
+  if (!adopt::calling_on() && !(flags & DXGI_PRESENT_TEST) && claim(Backend::kDx11) && ensure_renderer(sc) &&
+      wants_draw() && ensure_rtv(sc)) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -113,16 +163,21 @@ HRESULT __stdcall hk_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
     g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
   }
-  return g_orig_present(sc, sync, flags);
+  const auto orig = reinterpret_cast<PresentFn>(adopt::original(sc, kPresent, reinterpret_cast<void*>(g_orig_present)));
+  adopt::CallingOn on;
+  return orig(sc, sync, flags);
 }
 
 HRESULT __stdcall hk_resize(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags) {
-  if (g_rtv) {
-    g_rtv->Release();
-    g_rtv = nullptr;
-  }
+  release_rtv();
   if (g_renderer_ready) ImGui_ImplDX11_InvalidateDeviceObjects();
-  HRESULT hr = g_orig_resize(sc, count, w, h, fmt, flags);
+  const auto orig = reinterpret_cast<ResizeBuffersFn>(
+      adopt::original(sc, kResizeBuffers, reinterpret_cast<void*>(g_orig_resize)));
+  HRESULT hr;
+  {
+    adopt::CallingOn on;
+    hr = orig(sc, count, w, h, fmt, flags);
+  }
   logf("dx11: ResizeBuffers(%ux%u) -> 0x%08lX", w, h, hr);
   return hr;
 }
@@ -130,18 +185,23 @@ HRESULT __stdcall hk_resize(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI
 HRESULT __stdcall hk_create_swapchain(IDXGIFactory* self, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc,
                                       IDXGISwapChain** out) {
   HRESULT hr = g_orig_create_swapchain(self, device, desc, out);
-  if (SUCCEEDED(hr) && out && *out) capture_swapchain(*out, desc ? desc->OutputWindow : nullptr);
+  if (SUCCEEDED(hr) && out && *out) capture_swapchain(*out, desc ? desc->OutputWindow : nullptr, "CreateSwapChain");
   else logf("dx11: CreateSwapChain -> 0x%08lX", hr);
   return hr;
 }
 
+// In the factory class's vtable on Windows too: the Steam overlay skips a
+// factory slot that points outside dxgi.dll ("points to another module,
+// skipping hooks"), and it is the swap chain's vtable it reads again.
 void hook_factory(void* factory) {
   if (!factory || g_orig_create_swapchain) return;
   auto vt = mem::read<uintptr_t>(reinterpret_cast<uintptr_t>(factory));
   g_orig_create_swapchain = reinterpret_cast<CreateSwapChainFn>(
       mem::hook_vtable(vt, 10, reinterpret_cast<void*>(&hk_create_swapchain)));
   g_factory_vt = vt;
-  logf("dx11: DXGI factory %p intercepted; hooked CreateSwapChain", factory);
+  char where[MAX_PATH + 32];
+  describe_address(reinterpret_cast<void*>(g_orig_create_swapchain), where, sizeof(where));
+  logf("dx11: DXGI factory %p intercepted; hooked CreateSwapChain (was %s)", factory, where);
 }
 
 HRESULT WINAPI hk_create_factory(REFIID riid, void** out) {
@@ -162,7 +222,8 @@ HRESULT WINAPI hk_create_dev_sc(IDXGIAdapter* adapter, D3D_DRIVER_TYPE type, HMO
                                 ID3D11Device** dev, D3D_FEATURE_LEVEL* level,
                                 ID3D11DeviceContext** ctx) {
   HRESULT hr = g_real_create_dev_sc(adapter, type, sw, flags, levels, nlevels, sdk, desc, sc, dev, level, ctx);
-  if (SUCCEEDED(hr) && sc && *sc) capture_swapchain(*sc, desc ? desc->OutputWindow : nullptr);
+  if (SUCCEEDED(hr) && sc && *sc)
+    capture_swapchain(*sc, desc ? desc->OutputWindow : nullptr, "D3D11CreateDeviceAndSwapChain");
   return hr;
 }
 
@@ -202,10 +263,7 @@ void uninstall() {
     ImGui_ImplDX11_Shutdown();
     g_renderer_ready = false;
   }
-  if (g_rtv) {
-    g_rtv->Release();
-    g_rtv = nullptr;
-  }
+  release_rtv();
   if (g_context) {
     g_context->Release();
     g_context = nullptr;
